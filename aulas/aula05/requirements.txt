@@ -1,0 +1,8 @@
+# CCB0941 Computacao Grafica — Aula 05 (OpenGL moderno, "puro")
+# Instale num ambiente virtual:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+glfw>=2.7
+PyOpenGL>=3.1.7
+numpy>=1.24
+pillow>=10.0      # so o exemplo 1 (salva o PNG)

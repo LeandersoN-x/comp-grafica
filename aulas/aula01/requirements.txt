@@ -1,0 +1,5 @@
+# CCB0941 Computacao Grafica — Aula 01
+# Instale num ambiente virtual:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+pyglet>=2.0,<3.0

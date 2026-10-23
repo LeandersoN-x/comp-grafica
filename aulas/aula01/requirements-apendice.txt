@@ -1,0 +1,6 @@
+# CCB0941 — Aula 01, APENDICE OPCIONAL (apendice_opengl_triangulo.py)
+# So necessario para quem quiser rodar o demo de OpenGL "cru". A atividade
+# principal (primeira_janela.py) precisa apenas do pyglet (ver requirements.txt).
+#   pip install -r requirements-apendice.txt
+moderngl>=5.8
+pillow>=10.0
