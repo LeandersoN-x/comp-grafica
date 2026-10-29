@@ -1,57 +1,53 @@
 """
-CCB0941 — Computacao Grafica | Aula 04 (M3, 2/3)
-Window <-> viewport, zoom/pan e picking — SCAFFOLD
+CCB0941 — Computacao Grafica | Aulas 03 + 04 combinadas
+Editor 2D: mundo/tela, window/viewport, zoom/pan/picking e transformacoes.
 
-Na Aula 03 o editor desenhava tudo direto em PIXELS: a coordenada de um ponto
-da figura era a propria posicao dele na tela. Isso funciona ate o momento em
-que voce quer ver a cena de mais perto (zoom) ou olhar para outro lugar (pan)
-sem mexer nos objetos. Hoje separamos dois sistemas de coordenadas:
+Integra os dois esqueletos:
+  - Aula 03: matrizes 2D (translacao, rotacao, escala), criacao de figuras
+    (poligono, circulo, triangulo, retangulo), selecao por picking.
+  - Aula 04: separacao MUNDO x TELA, window/viewport, zoom, pan,
+    picking via matriz inversa e recorte (Cohen-Sutherland / Sutherland-Hodgman).
 
-  - MUNDO: onde os objetos vivem (unidades que VOCE escolhe);
-  - TELA:  pixels da janela do pyglet.
+Todas as figuras vivem em coordenadas do MUNDO. A cada quadro o programa
+transforma mundo -> tela pela matriz window->viewport. Zoom/pan alteram apenas
+a window (os objetos nao mudam). O clique do mouse chega em pixels e e
+convertido tela->mundo pela matriz inversa (para selecionar figuras ou criar
+pontos no mundo).
 
-Um retangulo do mundo, a WINDOW, e mapeado num retangulo da tela, a VIEWPORT,
-por uma matriz 3x3 em coordenadas homogeneas, montada por composicao de
-translacoes e escala, exatamente como na Aula 03. Zoom e pan NAO mexem nos
-objetos: mexem na window. O clique do mouse chega em pixels; para saber em que
-ponto do MUNDO o usuario clicou (picking), usamos a matriz INVERSA.
+--------------------------------------------------------------------------
+Controles
+--------------------------------------------------------------------------
+Criacao (modo 0 = selecao):
+  0               sai do modo de criacao (volta para selecao)
+  1               poligono livre (clique p/ pontos; 1 de novo fecha)
+  2               circulo (1o clique = centro, 2o = raio)
+  3               triangulo (3 cliques)
+  4               retangulo (2 cliques = cantos opostos)
 
-Cuidado com o nome: a "window" deste arquivo (retangulo do mundo) NAO e a
-`pyglet.window.Window` (a janela do sistema operacional). Aqui a janela do SO
-se chama `janela`, e a window do mundo se chama `window_mundo`.
+Selecao e transformacao (aplicam-se as figuras selecionadas):
+  clique esquerdo    seleciona a figura sob o cursor (modo 0)
+  Shift + clique     adiciona/remove da selecao
+  C                  limpa a selecao
+  Delete             apaga as figuras selecionadas
+  setas              transla (-15 px/tecla)
+  Q / E              rotaciona (+/-10 graus, anti-horario/horario)
+  + / -              escala (1.1x / 0.9x)
 
-O esqueleto JA RODA: a window comeca IGUAL a viewport, entao o mapeamento e a
-identidade e a cena aparece certa mesmo com os TODOs provisorios. O problema
-so aparece quando voce tenta dar zoom/pan. Procure os blocos # TODO.
+Zoom e pan:
+  clique direito + arrastar   pan
+  Ctrl / Alt  + arrastar      pan (trackpad)
+  Shift + setas               pan pelo teclado
+  roda do mouse / Z / X       zoom in / out (centrado no cursor)
+  V                           volta a vista inicial (reset da window)
 
-Conceitos de CG que voce vai exercitar
----------------------------------------
-- Mundo x tela; window x viewport ........................... pronto (leitura)
-- Pan: transladar a window (em unidades do mundo) ............ pronto (exemplo)
-- Matriz window -> viewport (composicao T . S . T) ........... TODO 1
-- Picking: tela -> mundo pela matriz INVERSA ................. TODO 2
-- Zoom: escalar a window em torno do centro .................. TODO 3
-- Zoom em torno do cursor .......................... TODO 4 (opcional)
-
-Requisitos:  pip install pyglet numpy   (ver requirements.txt)
-Controles (escolhidos para NAO colidir com as teclas do editor da Aula 03):
-  botao direito + arrastar -> pan                        (ja funciona*)
-  Ctrl (ou Alt/Option) + arrastar -> pan, para trackpad sem botao direito
-  Shift + setas            -> pan pelo teclado           (ja funciona*)
-  roda do mouse / Z / X    -> zoom in / out              (depois do TODO 3*)
-  clique esquerdo          -> marca o ponto do MUNDO clicado (picking, TODO 2)
-                              (sem Ctrl/Alt: com eles o clique e do pan)
-  C                        -> apaga as marcas
-  V                        -> volta a vista inicial
-  ESC                      -> sai
-  (*) a window muda (veja o texto no topo), mas a TELA so reage depois do
-      TODO 1. Esse descompasso e o primeiro sintoma a observar.
+ESC                sai
 """
+
+import math
 
 import numpy as np
 import pyglet
 
-# HiDPI/Retina: mesma linha das aulas anteriores; precisa vir ANTES da janela.
 pyglet.options.dpi_scaling = "stretch"
 
 from pyglet import shapes
@@ -59,140 +55,112 @@ from pyglet.window import key, mouse
 
 
 # ======================================================================
-# 1. A JANELA (do sistema operacional) e o BATCH  (pronto)
+# 1. A JANELA (do SO), O BATCH E AS CAMADAS  (pronto)
 # ======================================================================
 LARGURA, ALTURA = 640, 480
-janela = pyglet.window.Window(LARGURA, ALTURA, caption="Aula 04: window <-> viewport")
+janela = pyglet.window.Window(LARGURA, ALTURA, caption="Aulas 03+04: mundo/tela + transformacoes")
 batch = pyglet.graphics.Batch()
 
-# Camadas de desenho: numero menor e desenhado primeiro (fica atras).
-CAMADA_GRADE = pyglet.graphics.Group(order=0)
-CAMADA_CENA = pyglet.graphics.Group(order=1)
-CAMADA_MARCAS = pyglet.graphics.Group(order=2)
-CAMADA_HUD = pyglet.graphics.Group(order=3)
+CAMADA_GRADE   = pyglet.graphics.Group(order=0)
+CAMADA_CENA    = pyglet.graphics.Group(order=1)
+CAMADA_SELECAO = pyglet.graphics.Group(order=2)
+CAMADA_HUD     = pyglet.graphics.Group(order=3)
 
 
 # ======================================================================
-# 2. MATRIZES 2D EM COORDENADAS HOMOGENEAS  (prontas, as mesmas da Aula 03)
+# 2. MATRIZES 2D EM COORDENADAS HOMOGENEAS  (Aula 03)
 # ======================================================================
-# Convencao da Aula 03: ponto = vetor coluna [x, y, 1]^T e p' = M @ p.
+# Convencao: ponto = vetor coluna [x, y, 1]^T e p' = M @ p.
 
 def matriz_identidade():
+    """Cria a matriz identidade 3x3; serve como base para compor outras transformações."""
     return np.eye(3)
 
 
 def matriz_translacao(tx, ty):
+    """Retorna a matriz de translação em (tx, ty) no plano 2D."""
     return np.array([
         [1, 0, tx],
         [0, 1, ty],
-        [0, 0, 1],
+        [0, 0,  1],
+    ], dtype=float)
+
+
+def matriz_rotacao(theta_rad):
+    """Retorna a matriz de rotação por um ângulo em radianos."""
+    c, s = math.cos(theta_rad), math.sin(theta_rad)
+    return np.array([
+        [c, -s, 0],
+        [s,  c, 0],
+        [0,  0, 1],
     ], dtype=float)
 
 
 def matriz_escala(sx, sy):
-    # E o TODO 2 da Aula 03, ja resolvido: hoje ele e ferramenta, nao exercicio.
+    """Retorna a matriz de escala nos eixos X e Y."""
     return np.array([
-        [sx, 0, 0],
-        [0, sy, 0],
-        [0, 0, 1],
+        [sx, 0,  0],
+        [0,  sy, 0],
+        [0,  0,  1],
     ], dtype=float)
 
 
 def aplicar_transformacao(pontos, matriz):
-    """Aplica MATRIZ (3x3) a uma lista de pontos (x, y). Igual a da Aula 03."""
+    """Aplica uma matriz homogênea a uma lista de pontos 2D e retorna os pontos transformados."""
     pontos_h = np.array([[x, y, 1] for (x, y) in pontos], dtype=float).T   # 3 x N
-    resultado = matriz @ pontos_h                                          # 3 x N
-    return [(float(px), float(py)) for (px, py, _) in resultado.T]
+    res = matriz @ pontos_h
+    return [(float(px), float(py)) for (px, py, _) in res.T]
 
 
 # ======================================================================
-# 3. A CENA, em coordenadas do MUNDO  (pronta)
+# 3. VIEWPORT (tela) e WINDOW (mundo)  (Aula 04)
 # ======================================================================
-# A seta da Aula 03, ja posicionada no mundo (centro em (320, 240)). Nada nesta
-# secao sabe que existe uma tela: sao so numeros no sistema do mundo.
-SETA_MUNDO = [
-    (260, 220), (340, 220), (340, 195), (390, 240),
-    (340, 285), (340, 260), (260, 260),
-]
+# VIEWPORT: retangulo NA TELA onde a cena aparece. Aqui ocupa uma regiao
+# central da janela (deixa uma moldura visivel).
+VIEWPORT = (80, 60, 560, 420)
 
-# Um quadrado de lado 40 com um canto na origem do mundo: serve de referencia
-# para ver onde (0, 0) foi parar depois de zoom/pan.
-QUADRADO_MUNDO = [(0, 0), (40, 0), (40, 40), (0, 40)]
-
-# Grade do mundo: uma linha a cada PASSO_GRADE unidades, cobrindo uma regiao
-# bem maior que a vista inicial (para ter o que ver depois do pan/zoom out).
-PASSO_GRADE = 40
-GRADE_X = (-640, 1280)
-GRADE_Y = (-480, 960)
-
-# Pontos do MUNDO marcados pelo clique esquerdo (ver on_mouse_press).
-marcas_mundo = []
-
-
-# ======================================================================
-# 4. WINDOW (no mundo) e VIEWPORT (na tela)
-# ======================================================================
-# Ambas sao retangulos alinhados aos eixos: (xmin, ymin, xmax, ymax).
-#
-# VIEWPORT: onde, NA TELA, a cena aparece. Aqui ocupa a janela inteira.
-VIEWPORT = (0, 0, LARGURA, ALTURA)
-
-# WINDOW: que pedaco do MUNDO aparece. Comeca IGUAL a viewport: por isso a
-# matriz certa, no inicio, e a identidade, e a cena ja aparece no lugar certo
-# antes mesmo do TODO 1. Repare que a razao de aspecto (largura/altura) da
-# window e a mesma da viewport: 640/480 = 4/3.
+# WINDOW: pedaco do MUNDO exibido. Comeca igual a "razao de aspecto" da
+# viewport (640/480 = 4/3), entao no inicio a matriz e a identidade.
 WINDOW_INICIAL = (0.0, 0.0, float(LARGURA), float(ALTURA))
-window_mundo = list(WINDOW_INICIAL)
+window_mundo   = list(WINDOW_INICIAL)
 
+
+# ======================================================================
+# 4. MATRIZ WINDOW -> VIEWPORT  e  TELA <-> MUNDO  (Aula 04)
+# ======================================================================
+# Ordem (com p' = M @ p):  p_tela = T(vmin) . S . T(-wmin) . p_mundo
+#                          (a mais a direita aplica primeiro)
 
 def matriz_window_viewport(window, viewport):
-    # TODO 1: devolva a matriz 3x3 que leva um ponto do MUNDO (dentro da
-    # `window`) para a TELA (dentro da `viewport`). Monte-a por COMPOSICAO,
-    # com as funcoes da secao 2, em tres passos:
-    #
-    #   1. transladar o canto (wxmin, wymin) da window ate a origem;
-    #   2. escalar por sx = largura_viewport / largura_window
-    #                 sy = altura_viewport  / altura_window;
-    #   3. transladar a origem ate o canto (vxmin, vymin) da viewport.
-    #
-    # PREVEJA antes de escrever: em que ORDEM as tres matrizes aparecem no
-    # produto, com a convencao p' = M @ p? (Qual e aplicada primeiro ao ponto?)
+    """Calcula a matriz que mapeia pontos do mundo para a região visível da tela."""
     wxmin, wymin, wxmax, wymax = window
     vxmin, vymin, vxmax, vymax = viewport
-    sx = (vxmax-vxmin)/(wxmax-wxmin)
-    sy = (vymax-vymin)/(wymax-wymin)
+    sx = (vxmax - vxmin) / (wxmax - wxmin)
+    sy = (vymax - vymin) / (wymax - wymin)
     return np.array([
-        [sx, 0, vxmin-sx*(wxmin)],
-        [0, sy, vymin-sy*(wymin)],
-        [0, 0, 1],
+        [sx, 0, vxmin - sx * wxmin],
+        [0, sy, vymin - sy * wymax],
+        [0,  0,                     1],
     ], dtype=float)
 
+
 def mundo_para_tela(pontos):
-    """Pronto. Aplica a matriz window->viewport atual a uma lista de pontos."""
+    """Converte uma lista de pontos do mundo para coordenadas de tela usando a window atual."""
     return aplicar_transformacao(pontos, matriz_window_viewport(window_mundo, VIEWPORT))
 
 
 def tela_para_mundo(x, y):
-    # TODO 2: PICKING: o mouse entrega (x, y) em PIXELS da tela; devolva o
-    # ponto (x, y) correspondente no MUNDO. E o caminho de volta do TODO 1:
-    # use a INVERSA da matriz window->viewport (np.linalg.inv) e aplique-a ao
-    # ponto (reaproveite aplicar_transformacao).
-    #
-    # PREVEJA: o provisorio abaixo parece funcionar. Ate quando? Clique num
-    # canto do quadrado laranja, de zoom (depois do TODO 3) e clique de novo
-    # no MESMO canto. Onde a marca vai parar, e por que?
-    M = matriz_window_viewport(window_mundo, VIEWPORT)
-    Minversa = np.linalg.inv(M)
-    result = aplicar_transformacao([(x,y)], Minversa)
-    return result[0]   
+    """Inverte a projeção: converte um ponto em pixels da tela para coordenadas do mundo."""
+    M  = matriz_window_viewport(window_mundo, VIEWPORT)
+    Mi = np.linalg.inv(M)
+    return aplicar_transformacao([(x, y)], Mi)[0]
 
 
+# ======================================================================
+# 5. PAN E ZOOM (Aula 04)  — alteram apenas a WINDOW
+# ======================================================================
 def pan_mundo(dx, dy):
-    """PRONTO: desloca a WINDOW por (dx, dy) em unidades do MUNDO.
-
-    Os objetos nao mudam: quem anda e a window. Por isso, mover a window para a
-    DIREITA faz a cena parecer andar para a ESQUERDA na tela.
-    """
+    """Move a janela de visualização no mundo, deslocando toda a visão em (dx, dy)."""
     window_mundo[0] += dx
     window_mundo[2] += dx
     window_mundo[1] += dy
@@ -200,80 +168,293 @@ def pan_mundo(dx, dy):
 
 
 def zoom(fator):
-    # TODO 3: ZOOM em torno do CENTRO da window. `fator` > 1 aproxima (a cena
-    # parece MAIOR na tela); `fator` < 1 afasta. Altere `window_mundo` (4
-    # valores, em unidades do mundo) e mais nada: os objetos nao mudam.
-    #
-    # Perguntas-guia: para APROXIMAR, a window cresce ou encolhe? O centro da
-    # window deve mudar? Por que dividir largura e altura pelo MESMO fator
-    # preserva a razao de aspecto (e os objetos nao se deformam)?
+    """Aumenta ou diminui o zoom em torno do centro da window atual."""
     wxmin, wymin, wxmax, wymax = window_mundo
     cx = (wxmin + wxmax) / 2.0
     cy = (wymin + wymax) / 2.0
     largura = (wxmax - wxmin) / fator
-    altura = (wymax - wymin) / fator
-    
+    altura  = (wymax - wymin) / fator
     window_mundo[0] = cx - largura / 2.0
     window_mundo[2] = cx + largura / 2.0
-    window_mundo[1] = cy - altura / 2.0
-    window_mundo[3] = cy + altura / 2.0
-
-    #print(f"TODO 3: zoom({fator:.2f}) ainda nao implementado")
+    window_mundo[1] = cy - altura  / 2.0
+    window_mundo[3] = cy + altura  / 2.0
 
 
 def zoom_no_ponto(fator, x_tela, y_tela):
-    # TODO 4 (OPCIONAL): zoom em torno do ponto sob o CURSOR, como em mapas
-    # e editores: o ponto do mundo que estava sob o mouse continua sob o mouse
-    # depois do zoom. Dica: e a mesma ideia do "pivo" da rotacao (transladar
-    # o pivo para a origem, escalar, transladar de volta), aplicada a window.
-    # Precisa do TODO 2 (tela_para_mundo). Enquanto nao fizer, cai no TODO 3.
+    """Ajusta o zoom mantendo o ponto do mundo sob o cursor fixo na tela."""
+    p_antes = tela_para_mundo(x_tela, y_tela)
     zoom(fator)
+    p_depois = tela_para_mundo(x_tela, y_tela)
+    # Compensa o "escorrego" do ponto durante o zoom centrado.
+    pan_mundo(p_antes[0] - p_depois[0], p_antes[1] - p_depois[1])
 
 
 # ======================================================================
-# 5. DESENHO: todo quadro, MUNDO -> (window->viewport) -> TELA -> shapes
+# 6. RECORTE — Cohen-Sutherland (segmentos) e Sutherland-Hodgman (poligonos)
 # ======================================================================
-formas = []   # shapes recriados a cada atualizacao (como na Aula 03)
+def _codigo_reta(p, window):
+    """Gera o código de Cohen-Sutherland para um ponto em relação a uma janela de recorte."""
+    xmin, ymin, xmax, ymax = window
+    x, y = p
+    code = 0
+    if   x < xmin: code |= 1
+    elif x > xmax: code |= 2
+    if   y < ymin: code |= 4
+    elif y > ymax: code |= 8
+    return code
 
-rotulo = pyglet.text.Label(
-    "", x=8, y=ALTURA - 8, anchor_y="top", font_size=11, color=(230, 230, 230, 255),
-    batch=batch, group=CAMADA_HUD,
-)
+
+def _interseccao_borda(p0, p1, borda, window):
+    """Calcula o ponto em que um segmento cruza uma das bordas da janela de recorte."""
+    xmin, ymin, xmax, ymax = window
+    x0, y0 = p0
+    x1, y1 = p1
+    if   borda == "left":
+        x = xmin; y = y0 + (y1 - y0) * (xmin - x0) / (x1 - x0)
+    elif borda == "right":
+        x = xmax; y = y0 + (y1 - y0) * (xmax - x0) / (x1 - x0)
+    elif borda == "bottom":
+        y = ymin; x = x0 + (x1 - x0) * (ymin - y0) / (y1 - y0)
+    else:  # top
+        y = ymax; x = x0 + (x1 - x0) * (ymax - y0) / (y1 - y0)
+    return (x, y)
+
+
+def clip_segmento_cohen_sutherland(p0, p1, window):
+    """Recorta um segmento usando o algoritmo de Cohen-Sutherland, devolvendo o trecho visível."""
+    code0 = _codigo_reta(p0, window)
+    code1 = _codigo_reta(p1, window)
+    while True:
+        if code0 == 0 and code1 == 0:
+            return [p0, p1]
+        if code0 & code1:
+            return []
+        code = code0 if code0 else code1
+        borda = ("left"   if code & 1 else
+                 "right"  if code & 2 else
+                 "bottom" if code & 4 else "top")
+        if code == code0:
+            p0 = _interseccao_borda(p0, p1, borda, window)
+            code0 = _codigo_reta(p0, window)
+        else:
+            p1 = _interseccao_borda(p0, p1, borda, window)
+            code1 = _codigo_reta(p1, window)
+
+
+def _clip_pelo_limite(pontos, window, borda):
+    """Aplica a recorte de um polígono em relação a uma borda específica da janela."""
+    xmin, ymin, xmax, ymax = window
+    resultado = []
+    n = len(pontos)
+    for i in range(n):
+        a, b = pontos[i], pontos[(i + 1) % n]
+        ax, ay = a
+        bx, by = b
+        if   borda == "left":   inside_a, inside_b = ax >= xmin, bx >= xmin
+        elif borda == "right":  inside_a, inside_b = ax <= xmax, bx <= xmax
+        elif borda == "bottom": inside_a, inside_b = ay >= ymin, by >= ymin
+        else:                   inside_a, inside_b = ay <= ymax, by <= ymax
+
+        if inside_a and inside_b:
+            resultado.append(b)
+        elif inside_a and not inside_b:
+            resultado.append(_interseccao_borda(a, b, borda, window))
+        elif not inside_a and inside_b:
+            resultado.append(_interseccao_borda(a, b, borda, window))
+            resultado.append(b)
+    return resultado
+
+
+def clip_poligono_sutherland_hodgman(pontos, window):
+    """Recorta um polígono por todos os lados da janela usando Sutherland-Hodgman."""
+    if not pontos:
+        return []
+    poligono = list(pontos)
+    for borda in ("left", "right", "bottom", "top"):
+        poligono = _clip_pelo_limite(poligono, window, borda)
+        if not poligono:
+            return []
+    return poligono
+
+
+# ======================================================================
+# 7. MODELO DE FIGURAS — tudo em coordenadas do MUNDO  (funde Aula 03 + 04)
+# ======================================================================
+# Cada figura e um dict:
+#   {"tipo": "poligono", "pontos": [(x, y), ...], "cor": (r, g, b)}
+#   {"tipo": "circulo",  "centro": (x, y), "raio": r, "cor": (r, g, b)}
+#
+# Guardar as figuras como dados no MUNDO (e nao como shapes do pyglet) e o que
+# permite que zoom/pan/transformacoes funcionem juntos: a cada quadro elas sao
+# reconstruidas em pixels depois de passarem pela matriz window->viewport.
+
+figuras              = []   # lista de dicts
+figuras_selecionadas = []   # referencias (identidade) a itens de `figuras`
+
+COR_POLIGONO = (240, 140, 40)
+COR_CIRCULO  = (46, 204, 113)
+COR_TRIANG   = (155, 89, 182)
+COR_RETANG   = (52, 152, 219)
+
+
+def criar_poligono(pontos, cor=COR_POLIGONO):
+    """Adiciona um novo polígono ao conjunto de figuras da cena."""
+    figuras.append({"tipo": "poligono", "pontos": list(pontos), "cor": cor})
+
+
+def criar_circulo(centro, raio, cor=COR_CIRCULO):
+    """Cria um círculo a partir do centro e do raio."""
+    figuras.append({"tipo": "circulo", "centro": tuple(centro), "raio": float(raio), "cor": cor})
+
+
+def pontos_figura(fig):
+    """Retorna os pontos do mundo que definem a figura; círculos são aproximados por um polígono."""
+    if fig["tipo"] == "poligono":
+        return fig["pontos"]
+    cx, cy = fig["centro"]
+    r = fig["raio"]
+    n = 36
+    return [(cx + r * math.cos(2 * math.pi * i / n),
+             cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
+
+
+def centro_figura(fig):
+    """Calcula o centro geométrico da figura para servir como pivô em rotações e escalas."""
+    if fig["tipo"] == "circulo":
+        return fig["centro"]
+    pontos = fig["pontos"]
+    return (sum(p[0] for p in pontos) / len(pontos),
+            sum(p[1] for p in pontos) / len(pontos))
+
+
+def transformar_figura(fig, M):
+    """Aplica uma matriz de transformação aos dados da figura no mundo."""
+    if fig["tipo"] == "poligono":
+        fig["pontos"] = aplicar_transformacao(fig["pontos"], M)
+    else:
+        cx, cy = fig["centro"]
+        cx2, cy2 = aplicar_transformacao([(cx, cy)], M)[0]
+        det = M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0]
+        fig["centro"] = (cx2, cy2)
+        fig["raio"]  *= math.sqrt(abs(det))
+
+
+def ponto_em_figura(px, py, fig):
+    """Testa se um ponto do mundo está dentro da figura (uso em picking e seleção)."""
+    if fig["tipo"] == "circulo":
+        cx, cy = fig["centro"]
+        return math.hypot(px - cx, py - cy) <= fig["raio"]
+    pontos = fig["pontos"]
+    dentro = False
+    j = len(pontos) - 1
+    for i in range(len(pontos)):
+        xi, yi = pontos[i]
+        xj, yj = pontos[j]
+        if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+            dentro = not dentro
+        j = i
+    return dentro
+
+
+def figura_sob_cursor(px, py):
+    """Retorna a figura mais acima do topo sob a posição do mundo informada."""
+    for fig in reversed(figuras):
+        if ponto_em_figura(px, py, fig):
+            return fig
+    return None
+
+
+# ======================================================================
+# 8. DESENHO — reconstroi tudo a cada atualizacao (mundo -> tela)
+# ======================================================================
+formas = []   # shapes do pyglet recriados a cada atualizar()
+
+
+def desenhar_figura(fig):
+    """Recorta a figura pela janela e a desenha na tela em formato de polígono."""
+    pontos_mundo   = pontos_figura(fig)
+    pontos_visiveis = clip_poligono_sutherland_hodgman(pontos_mundo, window_mundo)
+    if len(pontos_visiveis) < 3:
+        return
+    pontos_tela = mundo_para_tela(pontos_visiveis)
+    formas.append(shapes.Polygon(*pontos_tela, color=fig["cor"],
+                                 batch=batch, group=CAMADA_CENA))
+
+
+def desenhar_caixa_selecao(fig):
+    """Desenha a caixa de seleção ao redor da figura atual na tela."""
+    pontos = pontos_figura(fig)
+    if not pontos:
+        return
+    xs = [p[0] for p in pontos]
+    ys = [p[1] for p in pontos]
+    (x1, y1), (x2, y2) = mundo_para_tela([(min(xs), min(ys)), (max(xs), max(ys))])
+    w, h = x2 - x1, y2 - y1
+    formas.append(shapes.Box(x1, y1, w, h, 2, color=(255, 230, 60),
+                             batch=batch, group=CAMADA_SELECAO))
+
+
+def desenhar_pendentes():
+    """Desenha os pontos temporários do modo de criação e as linhas intermediárias."""
+    pontos = list(pontos_pendentes)
+    if centro_pendente is not None:
+        pontos.append(centro_pendente)
+    if not pontos:
+        return
+    for (sx, sy) in mundo_para_tela(pontos):
+        formas.append(shapes.Circle(sx, sy, 3, color=(255, 255, 255),
+                                    batch=batch, group=CAMADA_SELECAO))
+    if modo == 1 and len(pontos_pendentes) >= 2:
+        for i in range(len(pontos_pendentes) - 1):
+            (x1, y1), (x2, y2) = mundo_para_tela(pontos_pendentes[i:i + 2])
+            formas.append(shapes.Line(x1, y1, x2, y2, 1, color=(255, 200, 100),
+                                      batch=batch, group=CAMADA_SELECAO))
 
 
 def linha_mundo(p, q, largura, cor, camada):
-    """Desenha o segmento p-q (em coordenadas do MUNDO)."""
-    (x1, y1), (x2, y2) = mundo_para_tela([p, q])
-    formas.append(shapes.Line(x1, y1, x2, y2, largura, color=cor, batch=batch, group=camada))
+    """Desenha um segmento do mundo recortado pela janela atual."""
+    seg = clip_segmento_cohen_sutherland(p, q, window_mundo)
+    if not seg or len(seg) < 2:
+        return
+    (x1, y1), (x2, y2) = mundo_para_tela(seg)
+    formas.append(shapes.Line(x1, y1, x2, y2, largura, color=cor,
+                              batch=batch, group=camada))
+
+
+# Grade do mundo (referencia visual para pan/zoom)
+PASSO_GRADE = 40
+GRADE_X = (-640, 1280)
+GRADE_Y = (-480, 960)
 
 
 def atualizar():
-    """Reconstroi todos os shapes a partir do estado atual (cena + window)."""
+    """Reconstrói todos os elementos visuais da cena com base no estado atual do mundo e da janela."""
     for f in formas:
         f.delete()
     formas.clear()
 
-    # Grade e eixos do mundo.
+    # Grade
     for gx in range(GRADE_X[0], GRADE_X[1] + 1, PASSO_GRADE):
-        cor = (200, 70, 70) if gx == 0 else (55, 55, 60)     # eixo y em vermelho
-        linha_mundo((gx, GRADE_Y[0]), (gx, GRADE_Y[1]), 2 if gx == 0 else 1, cor, CAMADA_GRADE)
+        cor = (200, 70, 70) if gx == 0 else (55, 55, 60)
+        linha_mundo((gx, GRADE_Y[0]), (gx, GRADE_Y[1]),
+                    2 if gx == 0 else 1, cor, CAMADA_GRADE)
     for gy in range(GRADE_Y[0], GRADE_Y[1] + 1, PASSO_GRADE):
-        cor = (70, 170, 70) if gy == 0 else (55, 55, 60)     # eixo x em verde
-        linha_mundo((GRADE_X[0], gy), (GRADE_X[1], gy), 2 if gy == 0 else 1, cor, CAMADA_GRADE)
+        cor = (70, 170, 70) if gy == 0 else (55, 55, 60)
+        linha_mundo((GRADE_X[0], gy), (GRADE_X[1], gy),
+                    2 if gy == 0 else 1, cor, CAMADA_GRADE)
 
-    # Objetos da cena: so aqui os pontos do mundo viram pixels.
-    formas.append(shapes.Polygon(*mundo_para_tela(QUADRADO_MUNDO), color=(240, 140, 40),
-                                 batch=batch, group=CAMADA_CENA))
-    formas.append(shapes.Polygon(*mundo_para_tela(SETA_MUNDO), color=(70, 140, 230),
-                                 batch=batch, group=CAMADA_CENA))
+    # Figuras no mundo -> recorte -> tela
+    for fig in figuras:
+        desenhar_figura(fig)
 
-    # Marcas do picking: guardadas no MUNDO, entao acompanham a cena no zoom/pan.
-    # O raio (5) e em PIXELS: marcador de interface nao cresce com o zoom.
-    if marcas_mundo:
-        for (mx, my) in mundo_para_tela(marcas_mundo):
-            formas.append(shapes.Circle(mx, my, 5, color=(255, 230, 60), batch=batch, group=CAMADA_MARCAS))
+    # Seleção (bounding box)
+    for fig in figuras_selecionadas:
+        desenhar_caixa_selecao(fig)
 
-    # Contorno da viewport (na TELA, fora do pipeline do mundo).
+    # Pontos em andamento
+    desenhar_pendentes()
+
+    # Contorno da viewport
     vxmin, vymin, vxmax, vymax = VIEWPORT
     formas.append(shapes.Box(vxmin, vymin, vxmax - vxmin, vymax - vymin, 2,
                              color=(160, 160, 160), batch=batch, group=CAMADA_HUD))
@@ -281,88 +462,258 @@ def atualizar():
     atualizar_rotulo()
 
 
-ultimo_mouse = None   # ultima posicao conhecida do mouse, em pixels da TELA
+# ======================================================================
+# 9. HUD
+# ======================================================================
+NOME_MODO = {0: "seleção", 1: "polígono", 2: "círculo",
+             3: "triângulo", 4: "retângulo"}
+
+rotulo = pyglet.text.Label(
+    "", x=8, y=ALTURA - 8, anchor_y="top", font_size=11,
+    color=(230, 230, 230, 255), multiline=True, width=LARGURA - 16,
+    batch=batch, group=CAMADA_HUD,
+)
+
+ultimo_mouse = None
 
 
 def atualizar_rotulo(x_tela=None, y_tela=None):
-    """HUD em coordenadas de TELA: nao passa pela matriz window->viewport."""
+    """Atualiza o HUD com a janela atual e a posição do mouse convertida para coordenadas do mundo."""
     global ultimo_mouse
     if x_tela is not None:
         ultimo_mouse = (x_tela, y_tela)
     wxmin, wymin, wxmax, wymax = window_mundo
-    texto = f"window: x [{wxmin:.0f}, {wxmax:.0f}]  y [{wymin:.0f}, {wymax:.0f}]"
+    texto = (
+        f"window: x [{wxmin:.0f}, {wxmax:.0f}]  y [{wymin:.0f}, {wymax:.0f}]   "
+        f"modo: {NOME_MODO.get(modo, '?')}   selecionadas: {len(figuras_selecionadas)}"
+    )
     if ultimo_mouse is not None:
         tx, ty = ultimo_mouse
         mx, my = tela_para_mundo(tx, ty)
-        texto += f"   |   mouse: tela ({tx}, {ty})  mundo ({mx:.1f}, {my:.1f})"
+        texto += f"\nmouse: tela ({tx}, {ty}) -> mundo ({mx:.1f}, {my:.1f})"
     rotulo.text = texto
 
 
 # ======================================================================
-# 6. O LOOP DE EVENTOS
+# 10. ESTADO DE INTERACAO (criacao / selecao / transformacao)
 # ======================================================================
-FATOR_ZOOM = 1.2      # por tecla / por "clique" da roda
-PASSO_PAN = 0.1       # fracao da largura/altura da window por tecla
+modo             = 0   # 0 = selecao; 1..4 = modos de criacao
+pontos_pendentes = []  # pontos ja clicados (em coords. do MUNDO)
+centro_pendente  = None
 
-# Teclas que transformam o arrasto com o botao ESQUERDO em pan. Existem para
-# trackpads sem botao direito (notebooks): Ctrl, ou Alt/Option no Mac.
-MODS_PAN = key.MOD_CTRL | key.MOD_ALT | key.MOD_OPTION
+PASSO_TRANSLACAO = 15
+PASSO_ROTACAO    = math.radians(10)
+FATOR_ESCALA     = 1.1
+FATOR_ZOOM       = 1.2
+PASSO_PAN        = 0.1
+MODS_PAN         = key.MOD_CTRL | key.MOD_ALT | key.MOD_OPTION
 
 
+def esta_selecionada(fig):
+    """Verifica se uma figura está na lista de seleção atual."""
+    return any(f is fig for f in figuras_selecionadas)
+
+
+def toggle_selecao(fig):
+    """Alterna a seleção de uma figura: adiciona ou remove da lista."""
+    for i, f in enumerate(figuras_selecionadas):
+        if f is fig:
+            del figuras_selecionadas[i]
+            return
+    figuras_selecionadas.append(fig)
+
+
+def aplicar_a_selecao(M_relativa, usar_pivo=True):
+    """Aplica uma transformação em todas as figuras selecionadas, opcionalmente em torno do próprio centro."""
+    if not figuras_selecionadas:
+        print("Nenhuma figura selecionada.")
+        return
+    for fig in figuras_selecionadas:
+        if usar_pivo:
+            cx, cy = centro_figura(fig)
+            M = matriz_translacao(cx, cy) @ M_relativa @ matriz_translacao(-cx, -cy)
+        else:
+            M = M_relativa
+        transformar_figura(fig, M)
+    atualizar()
+
+
+# ======================================================================
+# 11. EVENTOS
+# ======================================================================
 @janela.event
 def on_draw():
+    """Desenha o conteúdo do batch da janela em cada frame."""
     janela.clear()
     batch.draw()
 
 
 @janela.event
 def on_key_press(simbolo, modificadores):
-    global window_mundo
-    largura = window_mundo[2] - window_mundo[0]
-    altura = window_mundo[3] - window_mundo[1]
+    """Processa as teclas: troca de modo, pan, zoom, seleção e transformações."""
+    global modo, centro_pendente, pontos_pendentes, window_mundo
 
-    # Pan pelo teclado (Shift + setas): passo proporcional ao tamanho da window,
-    # para o pan ter a mesma "velocidade" aparente com qualquer zoom.
+    # -------- Pan por teclado: Shift + setas ---------------------------
     if modificadores & key.MOD_SHIFT and simbolo in (key.LEFT, key.RIGHT, key.UP, key.DOWN):
+        largura = window_mundo[2] - window_mundo[0]
+        altura  = window_mundo[3] - window_mundo[1]
         dx = {key.LEFT: -1, key.RIGHT: 1}.get(simbolo, 0) * PASSO_PAN * largura
-        dy = {key.DOWN: -1, key.UP: 1}.get(simbolo, 0) * PASSO_PAN * altura
+        dy = {key.DOWN: -1, key.UP:    1}.get(simbolo, 0) * PASSO_PAN * altura
         pan_mundo(dx, dy)
-    elif simbolo == key.Z:
-        zoom(FATOR_ZOOM)
-    elif simbolo == key.X:
-        zoom(1 / FATOR_ZOOM)
-    elif simbolo == key.C:
-        marcas_mundo.clear()
-    elif simbolo == key.V:
-        window_mundo = list(WINDOW_INICIAL)
-    elif simbolo == key.ESCAPE:
+        atualizar()
+        return
+
+    # -------- Modos de criacao ----------------------------------------
+    if simbolo == key._0:
+        modo = 0
+        pontos_pendentes.clear()
+        centro_pendente = None
+        print("Modo: seleção")
+        return
+
+    if simbolo == key._1:
+        if modo == 1 and len(pontos_pendentes) >= 3:
+            criar_poligono(pontos_pendentes)
+            pontos_pendentes = []
+            modo = 0
+            atualizar()
+        else:
+            modo = 1
+            figuras_selecionadas.clear()
+            pontos_pendentes = []
+            centro_pendente  = None
+            print("Modo polígono: clique para adicionar vértices; 1 de novo fecha.")
+        return
+
+    if simbolo == key._2:
+        modo = 2
+        figuras_selecionadas.clear()
+        centro_pendente = None
+        print("Modo círculo: 1º clique = centro, 2º clique = raio.")
+        return
+
+    if simbolo == key._3:
+        modo = 3
+        figuras_selecionadas.clear()
+        pontos_pendentes = []
+        print("Modo triângulo: clique em 3 pontos.")
+        return
+
+    if simbolo == key._4:
+        modo = 4
+        figuras_selecionadas.clear()
+        centro_pendente = None
+        print("Modo retângulo: 2 cliques (cantos opostos).")
+        return
+
+    # -------- Zoom / reset de vista -----------------------------------
+    if simbolo == key.Z:
+        zoom(FATOR_ZOOM);           atualizar(); return
+    if simbolo == key.X:
+        zoom(1.0 / FATOR_ZOOM);     atualizar(); return
+    if simbolo == key.V:
+        window_mundo = list(WINDOW_INICIAL); atualizar(); return
+
+    # -------- Selecao --------------------------------------------------
+    if simbolo == key.C:
+        figuras_selecionadas.clear(); atualizar(); return
+    if simbolo == key.DELETE:
+        figuras[:] = [f for f in figuras if not esta_selecionada(f)]
+        figuras_selecionadas.clear()
+        atualizar()
+        return
+
+    if simbolo == key.ESCAPE:
         janela.close()
         return
-    else:
-        return
-    atualizar()
+
+    # -------- Transformacoes (aplicam-se a selecao) -------------------
+    nova, pivo = None, True
+    if simbolo == key.LEFT:
+        nova, pivo = matriz_translacao(-PASSO_TRANSLACAO, 0), False
+    elif simbolo == key.RIGHT:
+        nova, pivo = matriz_translacao(PASSO_TRANSLACAO, 0), False
+    elif simbolo == key.UP:
+        nova, pivo = matriz_translacao(0, PASSO_TRANSLACAO), False
+    elif simbolo == key.DOWN:
+        nova, pivo = matriz_translacao(0, -PASSO_TRANSLACAO), False
+    elif simbolo == key.Q:
+        nova = matriz_rotacao(PASSO_ROTACAO)
+    elif simbolo == key.E:
+        nova = matriz_rotacao(-PASSO_ROTACAO)
+    elif simbolo in (key.PLUS, key.EQUAL):
+        nova = matriz_escala(FATOR_ESCALA, FATOR_ESCALA)
+    elif simbolo == key.MINUS:
+        nova = matriz_escala(1 / FATOR_ESCALA, 1 / FATOR_ESCALA)
+
+    if nova is not None:
+        aplicar_a_selecao(nova, usar_pivo=pivo)
 
 
 @janela.event
 def on_mouse_press(x, y, botao, modificadores):
-    # Clique esquerdo "puro" marca um ponto. Com Ctrl/Alt ele inicia um pan
-    # (ver on_mouse_drag), entao nao marca nada.
-    if botao == mouse.LEFT and not (modificadores & MODS_PAN):
-        p = tela_para_mundo(x, y)
-        marcas_mundo.append(p)
-        print(f"clique: tela ({x}, {y})  ->  mundo ({p[0]:.2f}, {p[1]:.2f})")
+    """Lida com cliques do mouse: seleção, criação de figuras e início de desenho."""
+    global modo, centro_pendente, pontos_pendentes
+
+    if botao != mouse.LEFT:
+        return
+    # Clique esquerdo + Ctrl/Alt: e para pan (tratado no drag), nao seleciona/cria
+    if modificadores & MODS_PAN:
+        return
+
+    # Picking: converte pixel -> MUNDO pela matriz INVERSA
+    wx, wy = tela_para_mundo(x, y)
+    print(f"clique: tela ({x}, {y}) -> mundo ({wx:.2f}, {wy:.2f})")
+
+    # -------- Modo 0: selecao -----------------------------------------
+    if modo == 0:
+        fig = figura_sob_cursor(wx, wy)
+        if modificadores & key.MOD_SHIFT:
+            if fig is not None:
+                toggle_selecao(fig)
+        else:
+            figuras_selecionadas.clear()
+            if fig is not None:
+                figuras_selecionadas.append(fig)
+        atualizar()
+        return
+
+    # -------- Modos de criacao ----------------------------------------
+    if modo == 1:  # poligono livre
+        pontos_pendentes.append((wx, wy))
+        atualizar()
+
+    elif modo == 2:  # circulo
+        if centro_pendente is None:
+            centro_pendente = (wx, wy)
+        else:
+            raio = math.hypot(wx - centro_pendente[0], wy - centro_pendente[1])
+            criar_circulo(centro_pendente, raio)
+            centro_pendente = None
+        atualizar()
+
+    elif modo == 3:  # triangulo
+        pontos_pendentes.append((wx, wy))
+        if len(pontos_pendentes) == 3:
+            criar_poligono(pontos_pendentes, cor=COR_TRIANG)
+            pontos_pendentes = []
+            modo = 0
+        atualizar()
+
+    elif modo == 4:  # retangulo (2 cantos opostos)
+        if centro_pendente is None:
+            centro_pendente = (wx, wy)
+        else:
+            x1, y1 = centro_pendente
+            x2, y2 = wx, wy
+            criar_poligono([(x1, y1), (x2, y1), (x2, y2), (x1, y2)], cor=COR_RETANG)
+            centro_pendente = None
         atualizar()
 
 
 @janela.event
 def on_mouse_drag(x, y, dx, dy, botoes, modificadores):
-    # PRONTO: pan arrastando com o botao direito (ou com o esquerdo +
-    # Ctrl/Alt, para trackpad). O mouse andou (dx, dy)
-    # PIXELS; a window deve andar o equivalente em unidades do MUNDO, e no
-    # sentido CONTRARIO (arrastar a cena para a direita = mover a window para
-    # a esquerda). Repare: (dx, dy) e um DESLOCAMENTO (vetor), nao um ponto:
-    # converte-se so pela escala, sem a translacao. E o "vetor usa 0 na
-    # terceira coordenada" da Aula 03.
+    """Move a vista ao arrastar o mouse com botão direito ou com o esquerdo + modificação de pan."""
     pan_com_esquerdo = (botoes & mouse.LEFT) and (modificadores & MODS_PAN)
     if (botoes & mouse.RIGHT) or pan_com_esquerdo:
         vxmin, vymin, vxmax, vymax = VIEWPORT
@@ -375,9 +726,7 @@ def on_mouse_drag(x, y, dx, dy, botoes, modificadores):
 
 @janela.event
 def on_mouse_scroll(x, y, scroll_x, scroll_y):
-    # Roda de mouse entrega passos inteiros (+1/-1); trackpad entrega muitos
-    # passos pequenos e fracionarios. Elevar o fator ao passo (limitado a 1)
-    # da um zoom proporcional nos dois casos.
+    """Aplica zoom com a roda do mouse, mantendo o ponto sob o cursor fixo no mundo."""
     if scroll_y:
         passo = max(-1.0, min(1.0, scroll_y))
         zoom_no_ponto(FATOR_ZOOM ** passo, x, y)
@@ -386,12 +735,28 @@ def on_mouse_scroll(x, y, scroll_x, scroll_y):
 
 @janela.event
 def on_mouse_motion(x, y, dx, dy):
+    """Atualiza o rótulo com a posição do mouse quando ele se move na janela."""
     atualizar_rotulo(x, y)
 
 
 # ======================================================================
-# 7. INICIA O LOOP.
+# 12. FIGURAS INICIAIS + LOOP PRINCIPAL
 # ======================================================================
+# A seta "classica" da Aula 03 (agora em coords. do MUNDO) e o quadrado de
+# referencia em (0, 0) — visiveis de imediato, para testar zoom/pan/selecao.
+figuras.append({
+    "tipo": "poligono",
+    "pontos": [(260, 220), (340, 220), (340, 195), (390, 240),
+               (340, 285), (340, 260), (260, 260)],
+    "cor": (70, 140, 230),
+})
+figuras.append({
+    "tipo": "poligono",
+    "pontos": [(0, 0), (40, 0), (40, 40), (0, 40)],
+    "cor": (240, 140, 40),
+})
+
+
 if __name__ == "__main__":
     atualizar()
     pyglet.app.run()
