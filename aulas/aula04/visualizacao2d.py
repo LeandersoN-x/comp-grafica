@@ -124,8 +124,7 @@ window_mundo   = list(WINDOW_INICIAL)
 # ======================================================================
 # 4. MATRIZ WINDOW -> VIEWPORT  e  TELA <-> MUNDO  (Aula 04)
 # ======================================================================
-# Ordem (com p' = M @ p):  p_tela = T(vmin) . S . T(-wmin) . p_mundo
-#                          (a mais a direita aplica primeiro)
+
 
 def matriz_window_viewport(window, viewport):
     wxmin, wymin, wxmax, wymax = window
@@ -135,7 +134,7 @@ def matriz_window_viewport(window, viewport):
     return np.array([
         [sx, 0, vxmin - sx * wxmin],
         [0, sy, vymin - sy * wymin],
-        [0,  0,                     1],
+        [0,  0, 1],
     ], dtype=float)
 
 
@@ -174,11 +173,13 @@ def zoom(fator):
 
 
 def zoom_no_ponto(fator, x_tela, y_tela):
-    """Zoom mantendo fixo o ponto do MUNDO que esta sob o cursor."""
+    """Zoom mantendo fixo o ponto do MUNDO que esta sob o cursor.
+    Guarda qual ponto do mundo está sob o mouse, dá o zoom normal, e depois empurra a janela para que aquele
+    mesmo ponto volte a ficar debaixo do mouse
+    """
     p_antes = tela_para_mundo(x_tela, y_tela)
     zoom(fator)
     p_depois = tela_para_mundo(x_tela, y_tela)
-    # Compensa o "escorrego" do ponto durante o zoom centrado.
     pan_mundo(p_antes[0] - p_depois[0], p_antes[1] - p_depois[1])
 
 
